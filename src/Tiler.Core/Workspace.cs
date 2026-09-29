@@ -16,40 +16,49 @@ public sealed class Workspace(IntRect bounds, int gap)
     public IntRect Bounds { get; set; } = bounds;
     public int Gap { get; set; } = gap;
 
+    /// <summary>Smallest size each window accepts; tiles don't shrink below it while there is room.</summary>
+    public Func<nint, IntSize>? MinSize { get; set; }
+
     public IEnumerable<nint> Windows => Leaves().Select(leaf => leaf.Window);
     public int Count => Leaves().Count();
 
     public bool Contains(nint window) => Find(window) != null;
 
-    public Workspace Clone() => new(Bounds, Gap) { root = root?.Clone() };
+    public Workspace Clone() => new(Bounds, Gap) { root = root?.Clone(), MinSize = MinSize };
 
     /// <summary>
     /// Adds a window. With a point, the tile nearest to it is split on the side the point is on;
     /// without one, the largest tile is split along its longer side.
+    /// When that split can't fit the minimum sizes, the perpendicular split of the same tile is tried,
+    /// and unless <paramref name="keepTarget"/> is set, the other tiles too, largest first.
     /// </summary>
-    public void Add(nint window, IntPoint? point = null)
+    /// <param name="keepTarget">The user dropped the window on this tile: never move it to another one.</param>
+    public void Add(nint window, IntPoint? point = null, bool keepTarget = false)
     {
         if (Contains(window))
             return;
 
-        var leaf = new WindowNode(window);
         if (root == null)
         {
-            root = leaf;
+            root = new WindowNode(window);
             return;
         }
 
         var tiles = ArrangeLeaves();
+        var candidates = new List<(nint Target, DropZone Zone)>();
         if (point is { } p)
         {
             var target = Nearest(tiles, p);
-            InsertBeside(target, leaf, EdgeToward(tiles[target], p));
+            AddWithRotation(candidates, target.Window, EdgeToward(tiles[target], p));
         }
-        else
+        if (point == null || !keepTarget)
         {
-            var (target, rect) = tiles.MaxBy(t => (long)t.Value.Width * t.Value.Height);
-            InsertBeside(target, leaf, rect.Width >= rect.Height ? DropZone.Right : DropZone.Bottom);
+            foreach (var (tile, rect) in tiles.OrderByDescending(t => (long)t.Value.Width * t.Value.Height))
+                AddWithRotation(candidates, tile.Window, rect.Width >= rect.Height ? DropZone.Right : DropZone.Bottom);
         }
+
+        var (targetWindow, zone) = FirstThatFits(candidates, (ws, t, z) => ws.InsertBeside(ws.Find(t)!, new WindowNode(window), z));
+        InsertBeside(Find(targetWindow)!, new WindowNode(window), zone);
     }
 
     /// <summary>
@@ -74,9 +83,55 @@ public sealed class Workspace(IntRect bounds, int gap)
             return true;
         }
 
+        var candidates = new List<(nint Target, DropZone Zone)>();
+        AddWithRotation(candidates, target.Window, zone);
+        (_, zone) = FirstThatFits(candidates, (ws, t, z) =>
+        {
+            var moved = ws.Find(window)!;
+            ws.RemoveLeaf(moved);
+            ws.InsertBeside(ws.Find(t)!, moved, z);
+        });
+
         RemoveLeaf(leaf);
         InsertBeside(target, leaf, zone);
         return true;
+    }
+
+    /// <summary>True when every window gets at least its minimum size.</summary>
+    public bool Fits()
+    {
+        if (root == null)
+            return true;
+        var min = MinSizeOf(root, []);
+        return min.Width <= Bounds.Width && min.Height <= Bounds.Height;
+    }
+
+    /// <summary>The split as asked, then the perpendicular one on the same side (left becomes top, right becomes bottom).</summary>
+    static void AddWithRotation(List<(nint, DropZone)> candidates, nint target, DropZone zone)
+    {
+        candidates.Add((target, zone));
+        candidates.Add((target, zone switch
+        {
+            DropZone.Left => DropZone.Top,
+            DropZone.Top => DropZone.Left,
+            DropZone.Right => DropZone.Bottom,
+            _ => DropZone.Right,
+        }));
+    }
+
+    /// <summary>Tries each placement on a copy and returns the first that fits; the first one if none does.</summary>
+    (nint Target, DropZone Zone) FirstThatFits(List<(nint Target, DropZone Zone)> candidates, Action<Workspace, nint, DropZone> place)
+    {
+        if (MinSize == null)
+            return candidates[0];
+        foreach (var candidate in candidates)
+        {
+            var trial = Clone();
+            place(trial, candidate.Target, candidate.Zone);
+            if (trial.Fits())
+                return candidate;
+        }
+        return candidates[0];
     }
 
     public bool Remove(nint window)
@@ -220,19 +275,49 @@ public sealed class Workspace(IntRect bounds, int gap)
     {
         var result = new Dictionary<LayoutNode, IntRect>();
         if (root != null)
-            Arrange(root, Bounds, result);
+        {
+            var mins = new Dictionary<LayoutNode, IntSize>();
+            MinSizeOf(root, mins);
+            Arrange(root, Bounds, result, mins);
+        }
         return result;
     }
 
-    void Arrange(LayoutNode node, IntRect area, Dictionary<LayoutNode, IntRect> result)
+    void Arrange(LayoutNode node, IntRect area, Dictionary<LayoutNode, IntRect> result, Dictionary<LayoutNode, IntSize> mins)
     {
         result[node] = area;
         if (node is SplitNode split)
         {
-            var (first, second) = LayoutMath.SplitArea(area, split.Kind, split.Ratio, Gap);
-            Arrange(split.First, first, result);
-            Arrange(split.Second, second, result);
+            var (firstMin, secondMin) = (mins[split.First], mins[split.Second]);
+            var (first, second) = split.Kind == SplitKind.Columns
+                ? LayoutMath.SplitArea(area, split.Kind, split.Ratio, Gap, firstMin.Width, secondMin.Width)
+                : LayoutMath.SplitArea(area, split.Kind, split.Ratio, Gap, firstMin.Height, secondMin.Height);
+            Arrange(split.First, first, result, mins);
+            Arrange(split.Second, second, result, mins);
         }
+    }
+
+    /// <summary>
+    /// A split needs both minimums plus the gap along its axis and the larger of them across it,
+    /// so an outer split leaves enough room for everything nested inside.
+    /// </summary>
+    IntSize MinSizeOf(LayoutNode node, Dictionary<LayoutNode, IntSize> mins)
+    {
+        IntSize size;
+        if (node is SplitNode split)
+        {
+            var a = MinSizeOf(split.First, mins);
+            var b = MinSizeOf(split.Second, mins);
+            size = split.Kind == SplitKind.Columns
+                ? new IntSize(a.Width + Gap + b.Width, Math.Max(a.Height, b.Height))
+                : new IntSize(Math.Max(a.Width, b.Width), a.Height + Gap + b.Height);
+        }
+        else
+        {
+            size = MinSize?.Invoke(((WindowNode)node).Window) ?? default;
+        }
+        mins[node] = size;
+        return size;
     }
 
     WindowNode? Find(nint window) => Leaves().FirstOrDefault(leaf => leaf.Window == window);

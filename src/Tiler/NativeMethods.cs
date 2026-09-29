@@ -48,7 +48,15 @@ internal static class NativeMethods
 
     public const int WM_MOUSEACTIVATE = 0x0021;
     public const int WM_WINDOWPOSCHANGING = 0x0046;
+    public const int WM_GETMINMAXINFO = 0x0024;
     public const int MA_NOACTIVATE = 3;
+    public const uint SMTO_BLOCK = 0x0001;
+    public const uint SMTO_ABORTIFHUNG = 0x0002;
+    public const int SM_CXMINTRACK = 34;
+    public const int SM_CYMINTRACK = 35;
+    public const int SM_CXMAXTRACK = 59;
+    public const int SM_CYMAXTRACK = 60;
+    public const int MDT_EFFECTIVE_DPI = 0;
 
     public const int VK_SHIFT = 0x10;
     public const int VK_CONTROL = 0x11;
@@ -74,6 +82,16 @@ internal static class NativeMethods
         public RECT rcMonitor;
         public RECT rcWork;
         public uint dwFlags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MINMAXINFO
+    {
+        public POINT ptReserved;
+        public POINT ptMaxSize;
+        public POINT ptMaxPosition;
+        public POINT ptMinTrackSize;
+        public POINT ptMaxTrackSize;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -174,6 +192,16 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetWindowPos(nint hwnd, nint insertAfter, int x, int y, int cx, int cy, uint flags);
+
+    /// <summary>WM_GETMINMAXINFO is a system message, so Windows marshals the struct into the target process and back.</summary>
+    [DllImport("user32.dll")]
+    public static extern nint SendMessageTimeoutW(nint hwnd, int msg, nint wParam, ref MINMAXINFO lParam, uint flags, uint timeout, out nint result);
+
+    [DllImport("user32.dll")]
+    public static extern int GetSystemMetrics(int index);
+
+    [DllImport("shcore.dll")]
+    public static extern int GetDpiForMonitor(nint monitor, int dpiType, out uint dpiX, out uint dpiY);
 
     [DllImport("user32.dll")]
     public static extern short GetAsyncKeyState(int vKey);

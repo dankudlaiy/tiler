@@ -2,6 +2,8 @@ namespace Tiler.Core;
 
 public readonly record struct IntPoint(int X, int Y);
 
+public readonly record struct IntSize(int Width, int Height);
+
 /// <summary>Screen rectangle in physical pixels; Right and Bottom are exclusive.</summary>
 public readonly record struct IntRect(int Left, int Top, int Right, int Bottom)
 {
@@ -28,18 +30,31 @@ public enum SplitKind
 
 public static class LayoutMath
 {
-    /// <summary>Splits <paramref name="area"/> in two, leaving <paramref name="gap"/> pixels between the halves.</summary>
-    public static (IntRect First, IntRect Second) SplitArea(IntRect area, SplitKind kind, double firstRatio, int gap)
+    /// <summary>
+    /// Splits <paramref name="area"/> in two, leaving <paramref name="gap"/> pixels between the halves.
+    /// The ratio gives way where a half would end up smaller than its minimum along the split axis.
+    /// </summary>
+    public static (IntRect First, IntRect Second) SplitArea(IntRect area, SplitKind kind, double firstRatio, int gap,
+        int firstMin = 0, int secondMin = 0)
     {
         if (kind == SplitKind.Columns)
         {
-            int first = (int)Math.Round(Math.Max(0, area.Width - gap) * firstRatio);
+            int first = FirstSize(Math.Max(0, area.Width - gap), firstRatio, firstMin, secondMin);
             return (area with { Right = area.Left + first }, area with { Left = area.Left + first + gap });
         }
         else
         {
-            int first = (int)Math.Round(Math.Max(0, area.Height - gap) * firstRatio);
+            int first = FirstSize(Math.Max(0, area.Height - gap), firstRatio, firstMin, secondMin);
             return (area with { Bottom = area.Top + first }, area with { Top = area.Top + first + gap });
         }
+    }
+
+    static int FirstSize(int available, double ratio, int firstMin, int secondMin)
+    {
+        int size = (int)Math.Round(available * ratio);
+        if (firstMin + secondMin <= available)
+            return Math.Clamp(size, firstMin, available - secondMin);
+        // Both can't fit: each falls short in proportion to what it needs.
+        return (int)Math.Round(available * (firstMin / (double)(firstMin + secondMin)));
     }
 }

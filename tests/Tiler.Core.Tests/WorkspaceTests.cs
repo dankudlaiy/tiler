@@ -192,6 +192,64 @@ public class WorkspaceTests
         Assert.Equal(100, ws.Arrange()[A].Width);
     }
 
+    static Func<nint, IntSize> Mins(params (nint Window, int Width, int Height)[] mins) =>
+        w => mins.FirstOrDefault(m => m.Window == w) is { Window: not 0 } m ? new IntSize(m.Width, m.Height) : default;
+
+    [Fact]
+    public void Split_gives_way_to_a_minimum_width()
+    {
+        var ws = Empty();
+        ws.MinSize = Mins((A, 700, 0));
+        ws.Add(A);
+        ws.Add(B);
+
+        var tiles = ws.Arrange();
+        Assert.Equal(700, tiles[A].Width);
+        Assert.Equal(IntRect.FromSize(708, 0, 300, 608), tiles[B]);
+    }
+
+    [Fact]
+    public void Nested_minimum_widens_the_outer_split()
+    {
+        var ws = Empty();
+        ws.MinSize = Mins((C, 600, 0));
+        ws.Add(A);
+        ws.Add(B);
+        ws.Add(C, new IntPoint(750, 590));
+
+        var tiles = ws.Arrange();
+        Assert.Equal(400, tiles[A].Width);
+        Assert.Equal(600, tiles[B].Width);
+        Assert.Equal(600, tiles[C].Width);
+    }
+
+    [Fact]
+    public void Shortfall_is_shared_in_proportion_to_the_minimums()
+    {
+        var ws = Empty();
+        // Too wide side by side and too tall stacked: some overlap is unavoidable.
+        ws.MinSize = Mins((A, 900, 400), (B, 300, 400));
+        ws.Add(A);
+        ws.Add(B);
+
+        var tiles = ws.Arrange();
+        Assert.Equal(750, tiles[A].Width);
+        Assert.Equal(250, tiles[B].Width);
+    }
+
+    [Fact]
+    public void Resizing_stops_at_the_neighbours_minimum()
+    {
+        var ws = Empty();
+        ws.MinSize = Mins((B, 400, 0));
+        ws.Add(A);
+        ws.Add(B);
+
+        ws.Resize(A, IntRect.FromSize(0, 0, 900, 608));
+
+        Assert.Equal(600, ws.Arrange()[A].Width);
+    }
+
     [Fact]
     public void Clone_is_independent()
     {
@@ -206,5 +264,82 @@ public class WorkspaceTests
         Assert.Equal(LeftHalf, ws.Arrange()[A]);
         Assert.Equal(2, ws.Count);
         Assert.Equal(3, preview.Count);
+    }
+
+    [Fact]
+    public void Drop_that_cannot_fit_side_by_side_stacks_instead()
+    {
+        var ws = Empty();
+        ws.MinSize = Mins((A, 700, 0), (B, 400, 0));
+        ws.Add(A);
+
+        ws.Add(B, new IntPoint(20, 300), keepTarget: true);
+
+        var tiles = ws.Arrange();
+        Assert.Equal(IntRect.FromSize(0, 0, 1008, 300), tiles[B]);
+        Assert.Equal(IntRect.FromSize(0, 308, 1008, 300), tiles[A]);
+        Assert.True(ws.Fits());
+    }
+
+    [Fact]
+    public void New_window_goes_to_another_tile_when_its_spot_is_too_tight()
+    {
+        var ws = Empty();
+        ws.MinSize = Mins((A, 600, 500), (B, 200, 0), (C, 300, 300));
+        ws.Add(A);
+        ws.Add(B);
+
+        // Near A, but neither split of A leaves room; below B does.
+        ws.Add(C, new IntPoint(100, 300));
+
+        var tiles = ws.Arrange();
+        Assert.Equal(tiles[B].Left, tiles[C].Left);
+        Assert.True(tiles[C].Top > tiles[B].Top);
+        Assert.True(ws.Fits());
+    }
+
+    [Fact]
+    public void Dropped_window_stays_on_its_tile_even_if_nothing_fits()
+    {
+        var ws = Empty();
+        ws.MinSize = Mins((A, 600, 500), (B, 200, 0), (C, 300, 300));
+        ws.Add(A);
+        ws.Add(B);
+
+        ws.Add(C, new IntPoint(100, 300), keepTarget: true);
+
+        var tiles = ws.Arrange();
+        Assert.True(tiles[C].Right <= tiles[B].Left);
+        Assert.False(ws.Fits());
+    }
+
+    [Fact]
+    public void Moving_rotates_the_split_when_side_by_side_is_too_tight()
+    {
+        var ws = Empty();
+        ws.MinSize = Mins((A, 700, 0), (B, 0, 0), (C, 400, 0));
+        ws.Add(A);
+        ws.Add(B);
+        // Near B, but only the column under A is wide enough for C.
+        ws.Add(C, new IntPoint(1000, 590));
+        Assert.True(ws.Arrange()[C].Top > ws.Arrange()[A].Top);
+
+        // Left edge of A: side by side would need 700 + 8 + 400 in the left column, so C goes on top instead.
+        ws.MoveTo(C, new IntPoint(20, 150));
+
+        var tiles = ws.Arrange();
+        Assert.True(ws.Fits());
+        Assert.True(tiles[C].Bottom <= tiles[A].Top);
+    }
+
+    [Fact]
+    public void Clone_keeps_minimum_sizes()
+    {
+        var ws = Empty();
+        ws.MinSize = Mins((A, 700, 0));
+        ws.Add(A);
+        ws.Add(B);
+
+        Assert.Equal(700, ws.Clone().Arrange()[A].Width);
     }
 }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Threading;
@@ -26,6 +26,7 @@ internal sealed class TilerController : IDisposable
     readonly List<nint> hooks = [];
     readonly Dictionary<nint, Monitor> monitors = [];
     readonly HashSet<nint> floating = [];
+    readonly Dictionary<nint, IntSize> minSizes = [];
     readonly HashSet<Monitor> dirty = [];
     bool arrangeScheduled;
     bool paused;
@@ -35,6 +36,7 @@ internal sealed class TilerController : IDisposable
     {
         this.settings = settings;
         animator.DurationMs = settings.AnimationMs;
+        animator.SizeRefused += OnSizeRefused;
         dragTimer = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(15) };
         dragTimer.Tick += (_, _) => UpdateDrag();
 
@@ -76,6 +78,7 @@ internal sealed class TilerController : IDisposable
     {
         monitors.Clear();
         dirty.Clear();
+        minSizes.Clear();
         var windows = new List<nint>();
         EnumWindows((hwnd, _) =>
         {
@@ -143,6 +146,7 @@ internal sealed class TilerController : IDisposable
                     break;
                 case EVENT_OBJECT_DESTROY:
                     floating.Remove(hwnd);
+                    minSizes.Remove(hwnd);
                     Untile(hwnd);
                     break;
                 case EVENT_SYSTEM_MINIMIZESTART:
@@ -319,7 +323,7 @@ internal sealed class TilerController : IDisposable
         if (layout.Contains(hwnd))
             layout.MoveTo(hwnd, point);
         else
-            layout.Add(hwnd, point);
+            layout.Add(hwnd, point, keepTarget: true);
     }
 
     void Tile(nint hwnd, IntPoint? point)
@@ -347,10 +351,45 @@ internal sealed class TilerController : IDisposable
         if (!monitors.TryGetValue(handle, out var monitor))
         {
             var workArea = WindowOps.WorkArea(handle);
-            monitor = new Monitor(workArea, new Workspace(LayoutBounds(workArea), settings.Gap));
+            monitor = new Monitor(workArea, new Workspace(LayoutBounds(workArea), settings.Gap) { MinSize = MinSizeOf });
             monitors[handle] = monitor;
         }
         return monitor;
+    }
+
+    IntSize MinSizeOf(nint hwnd)
+    {
+        if (!minSizes.TryGetValue(hwnd, out var size))
+        {
+            // A window that doesn't answer gets no minimum rather than being asked again on every layout pass.
+            size = WindowOps.MinVisualSize(hwnd) ?? default;
+            minSizes[hwnd] = size;
+        }
+        return size;
+    }
+
+    /// <summary>
+    /// Some apps enforce a minimum size without reporting it. When a window ends up bigger than its
+    /// tile, remember that size as its minimum and lay out again.
+    /// </summary>
+    void OnSizeRefused(nint hwnd, IntSize tile, IntSize actual)
+    {
+        var known = MinSizeOf(hwnd);
+        var learned = new IntSize(
+            actual.Width > tile.Width ? Math.Max(known.Width, actual.Width) : known.Width,
+            actual.Height > tile.Height ? Math.Max(known.Height, actual.Height) : known.Height);
+        if (learned == known || Owner(hwnd) is not { } owner)
+            return;
+        minSizes[hwnd] = learned;
+        Log.Info($"Learned minimum {learned.Width}x{learned.Height} of {WindowOps.Describe(hwnd)}");
+
+        // It was placed before its real minimum was known; place it again now that it is.
+        if (!owner.Layout.Fits() && owner.Layout.Arrange().TryGetValue(hwnd, out var rect))
+        {
+            owner.Layout.Remove(hwnd);
+            owner.Layout.Add(hwnd, WindowOps.Center(rect));
+        }
+        MarkDirty(owner);
     }
 
     /// <summary>The same gap around the screen edge as between tiles.</summary>

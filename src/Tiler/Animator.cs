@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Threading;
 using Tiler.Core;
 using static Tiler.NativeMethods;
 
@@ -19,8 +20,15 @@ internal sealed class Animator
     static readonly TimeSpan SettleDelay = TimeSpan.FromMilliseconds(150);
 
     readonly Dictionary<nint, Motion> motions = []; // UI thread only
+    readonly Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
 
     public int DurationMs { get; set; }
+
+    /// <summary>
+    /// A window stayed bigger than its tile (window, tile size, actual size): it has a minimum size
+    /// it didn't report. Raised on the UI thread.
+    /// </summary>
+    public event Action<nint, IntSize, IntSize>? SizeRefused;
 
     public void Animate(IReadOnlyDictionary<nint, IntRect> targets)
     {
@@ -46,7 +54,9 @@ internal sealed class Animator
                 continue;
             }
 
-            var motion = new Motion(hwnd, start, to, DurationMs);
+            var window = hwnd;
+            var motion = new Motion(hwnd, start, to, DurationMs,
+                (tile, actual) => dispatcher.BeginInvoke(() => SizeRefused?.Invoke(window, tile, actual)));
             motions[hwnd] = motion;
             motion.Start();
         }
@@ -59,7 +69,8 @@ internal sealed class Animator
             motion.Cancel();
     }
 
-    sealed class Motion(nint hwnd, IntRect start, IntRect to, int durationMs)
+    /// <param name="refused">Called from the animation thread with the tile and actual size when the window won't shrink to fit.</param>
+    sealed class Motion(nint hwnd, IntRect start, IntRect to, int durationMs, Action<IntSize, IntSize> refused)
     {
         readonly CancellationTokenSource cancel = new();
         readonly object sync = new();
@@ -114,8 +125,11 @@ internal sealed class Animator
 
                 if (cancel.Token.WaitHandle.WaitOne(SettleDelay))
                     return;
-                if (IsWindow(hwnd) && !IsZoomed(hwnd) && !IsIconic(hwnd) && WindowOps.VisualRect(hwnd) != to)
-                    WindowOps.MoveVisual(hwnd, to, async: false);
+                if (!IsWindow(hwnd) || IsZoomed(hwnd) || IsIconic(hwnd) || WindowOps.VisualRect(hwnd) == to)
+                    return;
+                WindowOps.MoveVisual(hwnd, to, async: false);
+                if (WindowOps.VisualRect(hwnd) is { } actual && (actual.Width > to.Width || actual.Height > to.Height))
+                    refused(new IntSize(to.Width, to.Height), new IntSize(actual.Width, actual.Height));
             }
             catch (Exception e)
             {

@@ -118,6 +118,35 @@ internal static class WindowOps
 
     public static IntPoint Center(IntRect r) => new(r.Left + r.Width / 2, r.Top + r.Height / 2);
 
+    /// <summary>
+    /// The smallest visible size the window accepts, from WM_GETMINMAXINFO. Null when the window doesn't answer in time.
+    /// </summary>
+    public static IntSize? MinVisualSize(nint hwnd)
+    {
+        // Pre-filled with the system defaults, as Windows does itself: apps usually adjust only the fields they care about.
+        var info = new MINMAXINFO
+        {
+            ptMinTrackSize = new POINT { X = GetSystemMetrics(SM_CXMINTRACK), Y = GetSystemMetrics(SM_CYMINTRACK) },
+            ptMaxTrackSize = new POINT { X = GetSystemMetrics(SM_CXMAXTRACK), Y = GetSystemMetrics(SM_CYMAXTRACK) },
+        };
+        // SMTO_BLOCK: don't dispatch other messages (and so our own WinEvent callbacks) while waiting.
+        if (SendMessageTimeoutW(hwnd, WM_GETMINMAXINFO, 0, ref info, SMTO_BLOCK | SMTO_ABORTIFHUNG, 100, out _) == 0)
+            return null;
+        if (FrameOf(hwnd) is not { } frame)
+            return null;
+
+        // A DPI-unaware app answers in its own 96-DPI pixels; Windows only scales it when it sends the message itself.
+        double scale = 1;
+        uint windowDpi = GetDpiForWindow(hwnd);
+        if (windowDpi > 0 && GetDpiForMonitor(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), MDT_EFFECTIVE_DPI, out uint monitorDpi, out _) == 0)
+            scale = monitorDpi / (double)windowDpi;
+
+        // The track size is the whole window rect; the tile is the visible frame.
+        int width = (int)Math.Ceiling(info.ptMinTrackSize.X * scale) - frame.Left - frame.Right;
+        int height = (int)Math.Ceiling(info.ptMinTrackSize.Y * scale) - frame.Top - frame.Bottom;
+        return new IntSize(Math.Max(0, width), Math.Max(0, height));
+    }
+
     /// <summary>How far the window rect extends past the visible frame on each side (the invisible resize borders).</summary>
     public static Frame? FrameOf(nint hwnd)
     {
