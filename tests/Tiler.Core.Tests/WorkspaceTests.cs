@@ -192,6 +192,112 @@ public class WorkspaceTests
         Assert.Equal(100, ws.Arrange()[A].Width);
     }
 
+    static Workspace FreeHalves()
+    {
+        var ws = Empty();
+        ws.FreeSizes = [];
+        ws.Add(A);
+        ws.Add(B);
+        return ws;
+    }
+
+    [Fact]
+    public void Free_size_shrinks_the_window_and_leaves_the_neighbour_alone()
+    {
+        var ws = FreeHalves();
+
+        Assert.True(ws.Resize(A, IntRect.FromSize(0, 0, 300, 400)));
+
+        var rects = ws.Arrange();
+        Assert.Equal(IntRect.FromSize(100, 104, 300, 400), rects[A]);
+        Assert.Equal(RightHalf, rects[B]);
+    }
+
+    [Fact]
+    public void Small_window_alone_is_centred_on_the_screen()
+    {
+        var ws = FreeHalves();
+
+        ws.Resize(B, new IntRect(708, 208, 1008, 608));
+        ws.Remove(A);
+
+        Assert.Equal(IntRect.FromSize(354, 104, 300, 400), ws.Arrange()[B]);
+    }
+
+    [Fact]
+    public void Free_size_past_the_tile_moves_the_border()
+    {
+        var ws = FreeHalves();
+        ws.Resize(A, IntRect.FromSize(0, 0, 300, 608));
+
+        ws.Resize(A, IntRect.FromSize(0, 0, 600, 608));
+
+        var rects = ws.Arrange();
+        Assert.Equal(IntRect.FromSize(0, 0, 600, 608), rects[A]);
+        Assert.Equal(IntRect.FromSize(608, 0, 400, 608), rects[B]);
+        Assert.Equal(default, ws.FreeSizes![A]);
+    }
+
+    [Fact]
+    public void Free_size_pulled_past_the_tile_stays_where_it_was_let_go()
+    {
+        var ws = FreeHalves();
+        ws.Resize(A, IntRect.FromSize(0, 0, 300, 608));
+
+        // Centred in 0..500 at 100..400; the right edge is pulled out to 550.
+        ws.Resize(A, new IntRect(100, 0, 550, 608));
+
+        var rects = ws.Arrange();
+        Assert.Equal(new IntRect(100, 0, 550, 608), rects[A]);
+        Assert.Equal(new IntRect(658, 0, 1008, 608), rects[B]);
+    }
+
+    [Fact]
+    public void Free_size_is_clamped_to_a_smaller_tile()
+    {
+        var ws = FreeHalves();
+        ws.Resize(A, IntRect.FromSize(0, 0, 400, 608));
+
+        ws.Add(C, new IntPoint(20, 300));
+
+        Assert.Equal(new IntRect(254, 0, 500, 608), ws.Arrange()[A]);
+    }
+
+    [Fact]
+    public void Free_size_given_on_join_is_centred_in_the_tile()
+    {
+        var ws = Empty();
+        ws.FreeSizes = new() { [B] = new FreeSize(300, 400) };
+        ws.Add(A);
+        ws.Add(B);
+
+        var rects = ws.Arrange();
+        Assert.Equal(LeftHalf, rects[A]);
+        Assert.Equal(IntRect.FromSize(608, 104, 300, 400), rects[B]);
+    }
+
+    [Fact]
+    public void Free_size_larger_than_the_tile_fills_it()
+    {
+        var ws = Empty();
+        ws.FreeSizes = new() { [B] = new FreeSize(900, 900) };
+        ws.Add(A);
+        ws.Add(B);
+
+        Assert.Equal(RightHalf, ws.Arrange()[B]);
+    }
+
+    [Fact]
+    public void Free_size_never_goes_below_the_minimum()
+    {
+        var ws = FreeHalves();
+        ws.MinSize = Mins((A, 350, 0));
+
+        ws.Resize(A, IntRect.FromSize(0, 0, 200, 608));
+
+        Assert.Equal(350, ws.Arrange()[A].Width);
+    }
+
     static Func<nint, IntSize> Mins(params (nint Window, int Width, int Height)[] mins) =>
         w => mins.FirstOrDefault(m => m.Window == w) is { Window: not 0 } m ? new IntSize(m.Width, m.Height) : default;
 

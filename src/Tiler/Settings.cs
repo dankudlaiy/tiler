@@ -27,6 +27,9 @@ internal sealed class Settings
     /// <summary>How long windows glide to their tiles; 0 moves them instantly.</summary>
     public int AnimationMs { get; set; } = 220;
 
+    /// <summary>Windows can be resized smaller than their tiles, leaving the rest of the tile empty.</summary>
+    public bool FreeSize { get; set; }
+
     /// <summary>Held while dropping a window, takes it out of the layout.</summary>
     public ModifierKey FloatModifier { get; set; } = ModifierKey.Ctrl;
 

@@ -37,6 +37,13 @@ internal sealed class TrayIcon : IDisposable
             controller.SetGap(px);
             settings.Save();
         }));
+        var freeSize = new ToolStripMenuItem("Окна могут быть меньше плитки") { CheckOnClick = true, Checked = settings.FreeSize };
+        freeSize.Click += (_, _) =>
+        {
+            controller.SetFreeSize(freeSize.Checked);
+            settings.Save();
+        };
+        menu.Items.Add(freeSize);
         menu.Items.Add(Choice("Анимация", Animations, a => a.Text, a => settings.AnimationMs == a.Ms, a =>
         {
             controller.SetAnimation(a.Ms);

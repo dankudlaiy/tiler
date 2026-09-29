@@ -19,12 +19,19 @@ public sealed class Workspace(IntRect bounds, int gap)
     /// <summary>Smallest size each window accepts; tiles don't shrink below it while there is room.</summary>
     public Func<nint, IntSize>? MinSize { get; set; }
 
+    /// <summary>
+    /// Sizes of windows that can be smaller than their tiles, centred in them; the rest of the tile stays empty.
+    /// A window without an entry fills its tile.
+    /// Null: every window fills its tile, and resizing one only moves the borders with its neighbours.
+    /// </summary>
+    public Dictionary<nint, FreeSize>? FreeSizes { get; set; }
+
     public IEnumerable<nint> Windows => Leaves().Select(leaf => leaf.Window);
     public int Count => Leaves().Count();
 
     public bool Contains(nint window) => Find(window) != null;
 
-    public Workspace Clone() => new(Bounds, Gap) { root = root?.Clone(), MinSize = MinSize };
+    public Workspace Clone() => new(Bounds, Gap) { root = root?.Clone(), MinSize = MinSize, FreeSizes = FreeSizes };
 
     /// <summary>
     /// Adds a window. With a point, the tile nearest to it is split on the side the point is on;
@@ -145,6 +152,8 @@ public sealed class Workspace(IntRect bounds, int gap)
     /// <summary>
     /// The user dragged the window's border to <paramref name="newRect"/>: moves the split lines
     /// that run along its edges, so that the neighbours follow.
+    /// With <see cref="FreeSizes"/>, only an edge pulled out past the tile moves a split line;
+    /// inside the tile the window just keeps the size it was given.
     /// </summary>
     public bool Resize(nint window, IntRect newRect)
     {
@@ -153,6 +162,41 @@ public sealed class Workspace(IntRect bounds, int gap)
             return false;
 
         var rects = ArrangeNodes();
+        var tile = rects[leaf];
+        if (FreeSizes == null)
+            return MoveSplits(leaf, rects, newRect);
+
+        var (left, right) = Reach(tile.Left, tile.Right, newRect.Left, newRect.Right);
+        var (top, bottom) = Reach(tile.Top, tile.Bottom, newRect.Top, newRect.Bottom);
+        var reach = new IntRect(left, top, right, bottom);
+        bool changed = MoveSplits(leaf, rects, reach);
+        var size = FreeSize.Of(newRect, reach);
+        // Kept even when it fills the tile, so that a window that comes back later still fills it.
+        changed |= !FreeSizes.TryGetValue(window, out var old) || old != size;
+        FreeSizes[window] = size;
+        return changed;
+    }
+
+    /// <summary>
+    /// The tile a free-size window needs along one axis: its own tile, or, when an edge was pulled out past it,
+    /// one reaching that far and as far again on the other side as the window left free there,
+    /// so the window stays centred right where the user let go of it.
+    /// </summary>
+    static (int Start, int End) Reach(int tileStart, int tileEnd, int start, int end)
+    {
+        bool pastStart = start < tileStart, pastEnd = end > tileEnd;
+        if (pastStart && pastEnd)
+            return (start, end);
+        if (pastStart)
+            return (start - Math.Max(0, tileEnd - end), tileEnd);
+        if (pastEnd)
+            return (tileStart, end + Math.Max(0, start - tileStart));
+        return (tileStart, tileEnd);
+    }
+
+    /// <summary>Moves the split lines along the edges of the leaf's tile that differ from <paramref name="newRect"/>.</summary>
+    bool MoveSplits(WindowNode leaf, Dictionary<LayoutNode, IntRect> rects, IntRect newRect)
+    {
         var old = rects[leaf];
         bool changed = false;
         LayoutNode child = leaf;
@@ -181,7 +225,15 @@ public sealed class Workspace(IntRect bounds, int gap)
 
     /// <summary>Visual rectangle of every window.</summary>
     public Dictionary<nint, IntRect> Arrange() =>
-        ArrangeLeaves().ToDictionary(tile => tile.Key.Window, tile => tile.Value);
+        ArrangeLeaves().ToDictionary(tile => tile.Key.Window, tile => Place(tile.Key.Window, tile.Value));
+
+    /// <summary>The window's rectangle in its tile: all of it, or the size the user gave it.</summary>
+    IntRect Place(nint window, IntRect tile)
+    {
+        if (FreeSizes == null || !FreeSizes.TryGetValue(window, out var size))
+            return tile;
+        return size.Place(tile, MinSize?.Invoke(window) ?? default);
+    }
 
     bool SetRatio(SplitNode split, int firstSize, int totalSize)
     {

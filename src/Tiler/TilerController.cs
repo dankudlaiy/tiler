@@ -27,6 +27,8 @@ internal sealed class TilerController : IDisposable
     readonly Dictionary<nint, Monitor> monitors = [];
     readonly HashSet<nint> floating = [];
     readonly Dictionary<nint, IntSize> minSizes = [];
+    // Shared by all monitors, so a window keeps its size when it moves to another one or comes back from minimized.
+    readonly Dictionary<nint, FreeSize> freeSizes = [];
     readonly HashSet<Monitor> dirty = [];
     bool arrangeScheduled;
     bool paused;
@@ -104,6 +106,18 @@ internal sealed class TilerController : IDisposable
         }
     }
 
+    public void SetFreeSize(bool enabled)
+    {
+        settings.FreeSize = enabled;
+        if (!enabled)
+            freeSizes.Clear();
+        foreach (var monitor in monitors.Values)
+        {
+            monitor.Layout.FreeSizes = enabled ? freeSizes : null;
+            MarkDirty(monitor);
+        }
+    }
+
     public void SetAnimation(int durationMs)
     {
         settings.AnimationMs = durationMs;
@@ -147,6 +161,7 @@ internal sealed class TilerController : IDisposable
                 case EVENT_OBJECT_DESTROY:
                     floating.Remove(hwnd);
                     minSizes.Remove(hwnd);
+                    freeSizes.Remove(hwnd);
                     Untile(hwnd);
                     break;
                 case EVENT_SYSTEM_MINIMIZESTART:
@@ -307,6 +322,8 @@ internal sealed class TilerController : IDisposable
         }
 
         floating.Remove(hwnd);
+        if (owner == null)
+            KeepOwnSize(hwnd);
         var target = MonitorAt(d.LastCursor);
         if (owner != null && owner != target)
         {
@@ -330,8 +347,19 @@ internal sealed class TilerController : IDisposable
     {
         var at = point ?? (WindowOps.VisualRect(hwnd) is { } rect ? WindowOps.Center(rect) : WindowOps.CursorPos());
         var monitor = MonitorAt(at);
+        KeepOwnSize(hwnd);
         monitor.Layout.Add(hwnd, at);
         MarkDirty(monitor);
+    }
+
+    /// <summary>
+    /// When windows can be smaller than their tiles, a window joining the layout keeps the size it has,
+    /// unless it already has one from before.
+    /// </summary>
+    void KeepOwnSize(nint hwnd)
+    {
+        if (settings.FreeSize && !freeSizes.ContainsKey(hwnd) && WindowOps.VisualRect(hwnd) is { } rect)
+            freeSizes[hwnd] = new FreeSize(rect.Width, rect.Height);
     }
 
     void Untile(nint hwnd)
@@ -351,7 +379,11 @@ internal sealed class TilerController : IDisposable
         if (!monitors.TryGetValue(handle, out var monitor))
         {
             var workArea = WindowOps.WorkArea(handle);
-            monitor = new Monitor(workArea, new Workspace(LayoutBounds(workArea), settings.Gap) { MinSize = MinSizeOf });
+            monitor = new Monitor(workArea, new Workspace(LayoutBounds(workArea), settings.Gap)
+            {
+                MinSize = MinSizeOf,
+                FreeSizes = settings.FreeSize ? freeSizes : null,
+            });
             monitors[handle] = monitor;
         }
         return monitor;
