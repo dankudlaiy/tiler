@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Tiler.Core/Tiler.Core.csproj" />
+    <Project Path="src/Tiler/Tiler.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Tiler.Core.Tests/Tiler.Core.Tests.csproj" />
+  </Folder>
+</Solution>
